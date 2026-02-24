@@ -8,33 +8,56 @@ from cocotb.triggers import ClockCycles
 
 @cocotb.test()
 async def test_project(dut):
-    dut._log.info("Start")
+    dut._log.info("Start neuron smoke test")
 
-    # Set the clock period to 10 us (100 KHz)
+    # 100 kHz test clock.
     clock = Clock(dut.clk, 10, unit="us")
     cocotb.start_soon(clock.start())
 
     # Reset
-    dut._log.info("Reset")
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)
 
-    dut._log.info("Test project behavior")
+    # Default mode is LIF with activation streaming enabled.
+    # Send a tick event: ui_in[7]=1 (is_tick), payload otherwise zero.
+    tick_event = 0x80
+    dut.ui_in.value = tick_event
+    dut.uio_in.value = 0x01  # in_req=1
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+    got_ack = False
+    for _ in range(32):
+        await ClockCycles(dut.clk, 1)
+        if int(dut.uio_out.value) & 0x01:
+            got_ack = True
+            break
+    assert got_ack, "Timed out waiting for in_ack"
 
-    # Wait for one clock cycle to see the output values
+    # Deassert input request after acceptance.
+    dut.uio_in.value = 0x00
     await ClockCycles(dut.clk, 1)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # Expect one output activation packet: valid=1, type=ACT(101), payload=0 -> 0xD0.
+    got_out_req = False
+    for _ in range(16):
+        await ClockCycles(dut.clk, 1)
+        if int(dut.uio_out.value) & 0x02:
+            got_out_req = True
+            break
+    assert got_out_req, "Timed out waiting for out_req"
+    assert int(dut.uo_out.value) == 0xD0, f"Unexpected output data: 0x{int(dut.uo_out.value):02X}"
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    # Acknowledge and drain output.
+    dut.uio_in.value = 0x02  # out_ack=1
+    drained = False
+    for _ in range(32):
+        await ClockCycles(dut.clk, 1)
+        if (int(dut.uio_out.value) & 0x02) == 0:
+            drained = True
+            break
+    assert drained, "Timed out waiting for out_req to clear"
+    dut.uio_in.value = 0x00

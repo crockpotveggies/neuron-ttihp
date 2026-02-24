@@ -1,9 +1,9 @@
 # Tiny Tapeout project information
 project:
-  title:        ""      # Project title
+  title:        "Neuron Tile"      # Project title
   author:       ""      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  ""      # One line description of what your project does
+  description:  "Event-driven neuromorphic neuron tile with selectable modes and on-chip learning"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     0       # Clock frequency in Hz (or 0 if not applicable)
 
@@ -11,46 +11,57 @@ project:
   tiles: "1x1"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
-  top_module:  "tt_um_example"
+  top_module:  "tt_um_crockpotveggies_neuron"
 
   # List your project's source files here.
   # Source files must be in ./src and you must list each source file separately, one per line.
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "project.v"
+    - "neuron.v"
+    - "neuron_event_decode.v"
+    - "neuron_io_frontend.v"
+    - "neuron_learning.v"
+    - "neuron_mode_conv.v"
+    - "neuron_mode_fst.v"
+    - "neuron_mode_lif.v"
+    - "neuron_mode_select.v"
+    - "neuron_mode_td.v"
+    - "neuron_outq.v"
+    - "neuron_synapse_bank.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
   # Inputs
-  ui[0]: ""
-  ui[1]: ""
-  ui[2]: ""
-  ui[3]: ""
-  ui[4]: ""
-  ui[5]: ""
-  ui[6]: ""
-  ui[7]: ""
+  ui[0]: "IN_DATA[0] (addr[0])"
+  ui[1]: "IN_DATA[1] (addr[1])"
+  ui[2]: "IN_DATA[2] (addr[2])"
+  ui[3]: "IN_DATA[3] (addr[3])"
+  ui[4]: "IN_DATA[4] (addr[4])"
+  ui[5]: "IN_DATA[5] (addr[5])"
+  ui[6]: "IN_DATA[6] (polarity)"
+  ui[7]: "IN_DATA[7] (is_tick)"
 
   # Outputs
-  uo[0]: ""
-  uo[1]: ""
-  uo[2]: ""
-  uo[3]: ""
-  uo[4]: ""
-  uo[5]: ""
-  uo[6]: ""
-  uo[7]: ""
+  uo[0]: "OUT_DATA[0]"
+  uo[1]: "OUT_DATA[1]"
+  uo[2]: "OUT_DATA[2]"
+  uo[3]: "OUT_DATA[3]"
+  uo[4]: "OUT_DATA[4] (type[0])"
+  uo[5]: "OUT_DATA[5] (type[1])"
+  uo[6]: "OUT_DATA[6] (type[2])"
+  uo[7]: "OUT_DATA[7] (valid)"
 
   # Bidirectional pins
-  uio[0]: ""
-  uio[1]: ""
-  uio[2]: ""
-  uio[3]: ""
-  uio[4]: ""
-  uio[5]: ""
-  uio[6]: ""
-  uio[7]: ""
+  uio[0]: "IN_REQ (in) / IN_ACK (out)"
+  uio[1]: "OUT_ACK (in) / OUT_REQ (out)"
+  uio[2]: "CFG_OP[0] (in)"
+  uio[3]: "CFG_OP[1] (in)"
+  uio[4]: "CFG_ARG[0] (in)"
+  uio[5]: "CFG_ARG[1] (in)"
+  uio[6]: "CFG_ARG[2] (in)"
+  uio[7]: "CFG_ARG[3] (in)"
 
 # Do not change!
 yaml_version: 6

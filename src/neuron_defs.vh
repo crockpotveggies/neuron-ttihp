@@ -1,0 +1,16 @@
+`ifndef NEURON_DEFS_VH
+`define NEURON_DEFS_VH
+
+`define NEURON_MODE_LIF  2'b00
+`define NEURON_MODE_TD   2'b01
+`define NEURON_MODE_FST  2'b10
+`define NEURON_MODE_CONV 2'b11
+
+`define NEURON_TYPE_SPIKE 3'b000
+`define NEURON_TYPE_ACT   3'b101
+
+`define NEURON_ADDR_RESET 6'd61
+`define NEURON_ADDR_ARM   6'd62
+`define NEURON_ADDR_CFG   6'd63
+
+`endif

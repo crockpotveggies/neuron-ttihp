@@ -6,7 +6,18 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v
+PROJECT_SOURCES = project.v \
+	neuron.v \
+	neuron_event_decode.v \
+	neuron_io_frontend.v \
+	neuron_learning.v \
+	neuron_mode_conv.v \
+	neuron_mode_fst.v \
+	neuron_mode_lif.v \
+	neuron_mode_select.v \
+	neuron_mode_td.v \
+	neuron_outq.v \
+	neuron_synapse_bank.v
 
 ifneq ($(GATES),yes)
 
