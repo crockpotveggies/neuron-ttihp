@@ -180,7 +180,7 @@ async def test_all(dut):
       4) CONV mode: spike + tick -> ACT shows conv sum progression
     """
     # Start a clock (TT templates expect this)
-    cocotb.start_soon(Clock(dut.clk, CLOCK_PERIOD_NS, unit="ns").start())
+    cocotb.start_soon(Clock(dut.clk, CLOCK_PERIOD_NS, units="ns").start())
 
     dut._log.info("Reset")
     await reset_dut(dut)
