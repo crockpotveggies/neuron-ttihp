@@ -112,6 +112,15 @@ def read_signed(sig) -> int:
     return value - (1 << width) if value & sign_bit else value
 
 
+def has_path(root, path: str) -> bool:
+    obj = root
+    for name in path.split("."):
+        if not hasattr(obj, name):
+            return False
+        obj = getattr(obj, name)
+    return True
+
+
 def read_s4_field(value: int, lane: int) -> int:
     return to_s4((value >> (lane * 4)) & 0xF)
 
@@ -567,6 +576,11 @@ async def wait_output_valid(dut, timeout_cycles: int = 50) -> None:
 
 
 async def wait_event_commit(dut, timeout_cycles: int = 50) -> None:
+    if not has_path(dut, "u_neuron.busy_r"):
+        for _ in range(timeout_cycles):
+            await RisingEdge(dut.clk)
+        await ReadWrite()
+        return
     await RisingEdge(dut.clk)
     for _ in range(timeout_cycles):
         if read_unsigned(dut.u_neuron.busy_r) == 0:
@@ -591,12 +605,15 @@ async def issue_command(dut, kind: int, addr_or_sid: int, data: int = 0, wait_re
     target_uio = encode_uio((data >> 2) & 0x3F, in_req=1, out_ack=0)
     dut.ui_in.value = target_ui
     dut.uio_in.value = target_uio
-    for _ in range(100):
-        if read_unsigned(dut.ui_in_sync) == target_ui and read_unsigned(dut.uio_in_sync) == target_uio:
-            break
-        await RisingEdge(dut.clk)
+    if has_path(dut, "ui_in_sync") and has_path(dut, "uio_in_sync"):
+        for _ in range(100):
+            if read_unsigned(dut.ui_in_sync) == target_ui and read_unsigned(dut.uio_in_sync) == target_uio:
+                break
+            await RisingEdge(dut.clk)
+        else:
+            raise RuntimeError(f"timeout syncing command kind={kind} addr={addr_or_sid}")
     else:
-        raise RuntimeError(f"timeout syncing command kind={kind} addr={addr_or_sid}")
+        await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     for _ in range(100):
         if (read_unsigned(dut.uio_out) & 0x1) == 0:
@@ -607,12 +624,15 @@ async def issue_command(dut, kind: int, addr_or_sid: int, data: int = 0, wait_re
     dut.uio_in.value = encode_uio(0, in_req=0, out_ack=0)
     dut.ui_in.value = 0
     if wait_rearm:
-        for _ in range(100):
-            if read_unsigned(dut.ui_in_sync) == 0 and read_unsigned(dut.uio_in_sync) == 0:
-                break
-            await RisingEdge(dut.clk)
+        if has_path(dut, "ui_in_sync") and has_path(dut, "uio_in_sync"):
+            for _ in range(100):
+                if read_unsigned(dut.ui_in_sync) == 0 and read_unsigned(dut.uio_in_sync) == 0:
+                    break
+                await RisingEdge(dut.clk)
+            else:
+                raise RuntimeError(f"timeout draining command kind={kind} addr={addr_or_sid}")
         else:
-            raise RuntimeError(f"timeout draining command kind={kind} addr={addr_or_sid}")
+            await RisingEdge(dut.clk)
         for _ in range(100):
             if read_unsigned(dut.uio_out) & 0x1:
                 break
@@ -633,10 +653,11 @@ async def weight_write(dut, model: GoldenNeuron, idx: int, code: int) -> None:
 
 async def ucode_write_byte(dut, model: GoldenNeuron, data: int) -> None:
     await issue_command(dut, CMD_UCODE, 0, data)
-    assert read_unsigned(dut.u_neuron.u_csr.ucode_prog_data) == (data & 0xFF), (
-        f"ucode_write_byte data mismatch: expected 0x{data & 0xFF:02x}, "
-        f"got 0x{read_unsigned(dut.u_neuron.u_csr.ucode_prog_data) & 0xFF:02x}"
-    )
+    if has_path(dut, "u_neuron.u_csr.ucode_prog_data"):
+        assert read_unsigned(dut.u_neuron.u_csr.ucode_prog_data) == (data & 0xFF), (
+            f"ucode_write_byte data mismatch: expected 0x{data & 0xFF:02x}, "
+            f"got 0x{read_unsigned(dut.u_neuron.u_csr.ucode_prog_data) & 0xFF:02x}"
+        )
     model.ucode_write(data)
 
 
@@ -654,14 +675,15 @@ async def program_words(dut, model: GoldenNeuron, words: list[int], base: int = 
         current = (model.vector_bases[3] << 4) | model.vector_bases[2]
         next_val = (base << 4) | (current & 0xF) if vector_tag == 3 else ((current & 0xF0) | (base & 0xF))
         await csr_write(dut, model, CSR_VEC_BASE_23, next_val)
-    await ReadWrite()
-    flat = read_unsigned(dut.u_neuron.u_ucode_store.ucode_flat)
-    for idx in range(len(words)):
-        actual = (flat >> (((base + idx) & 0xF) * 16)) & 0xFFFF
-        expected = model.ucode_mem[(base + idx) & 0xF] & 0xFFFF
-        assert actual == expected, (
-            f"program_words word {(base + idx) & 0xF}: expected 0x{expected:04x}, got 0x{actual:04x}"
-        )
+    if has_path(dut, "u_neuron.u_ucode_store.ucode_flat"):
+        await ReadWrite()
+        flat = read_unsigned(dut.u_neuron.u_ucode_store.ucode_flat)
+        for idx in range(len(words)):
+            actual = (flat >> (((base + idx) & 0xF) * 16)) & 0xFFFF
+            expected = model.ucode_mem[(base + idx) & 0xF] & 0xFFFF
+            assert actual == expected, (
+                f"program_words word {(base + idx) & 0xF}: expected 0x{expected:04x}, got 0x{actual:04x}"
+            )
 
 
 def _pack_init_byte(lo: int, hi: int) -> int:
@@ -698,6 +720,8 @@ async def send_event_capture_preview(dut, event: Event) -> None:
     target_uio = encode_uio(event.event_time & 0x3F, in_req=1, out_ack=0)
     dut.ui_in.value = target_ui
     dut.uio_in.value = target_uio
+    if not (has_path(dut, "ui_in_sync") and has_path(dut, "uio_in_sync")):
+        raise RuntimeError("send_event_capture_preview requires RTL-visible synchronized inputs")
     for _ in range(100):
         if read_unsigned(dut.ui_in_sync) == target_ui and read_unsigned(dut.uio_in_sync) == target_uio:
             break
@@ -722,12 +746,20 @@ async def ack_output(dut, model: GoldenNeuron) -> int:
     dut.uio_in.value = encode_uio(0, in_req=0, out_ack=1)
     await RisingEdge(dut.clk)
     dut.uio_in.value = 0
-    for _ in range(100):
-        if (read_unsigned(dut.uio_in_sync) >> 1) & 0x1:
-            break
-        await RisingEdge(dut.clk)
+    if has_path(dut, "uio_in_sync"):
+        for _ in range(100):
+            if (read_unsigned(dut.uio_in_sync) >> 1) & 0x1:
+                break
+            await RisingEdge(dut.clk)
+        else:
+            raise RuntimeError("timeout waiting for synchronized output ack")
     else:
-        raise RuntimeError("timeout waiting for synchronized output ack")
+        for _ in range(100):
+            if ((read_unsigned(dut.uio_out) >> 1) & 0x1) == 0:
+                break
+            await RisingEdge(dut.clk)
+        else:
+            raise RuntimeError("timeout waiting for output valid to clear after ack")
     await RisingEdge(dut.clk)
     expected = model.ack_output()
     assert observed == expected, f"ack_output: expected 0x{expected:02x}, got 0x{observed:02x}"

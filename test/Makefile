@@ -45,7 +45,11 @@ COMPILE_ARGS 		+= -I$(SRC_DIR)/..
 TOPLEVEL = tt_um_crockpotveggies_neuron
 
 # List test modules to run, separated by commas and without the .py suffix:
+ifeq ($(GATES),yes)
+MODULE = gl_test
+else
 MODULE = test
+endif
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
