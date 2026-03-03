@@ -1,5 +1,5 @@
 `default_nettype none
-`include "common/struct/rv_if_t.vh"
+`include "src/common/struct/rv_if_t.vh"
 
 module neuron_exec (
     input  wire        execute_valid,
@@ -33,7 +33,7 @@ module neuron_exec (
     output reg         emit_pending_next,
     output reg  [7:0]  emit_data_next
 );
-    `include "common/packages/event_types.vh"
+    `include "src/common/packages/event_types.vh"
 
     integer step;
     integer instr_index;

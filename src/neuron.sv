@@ -1,5 +1,5 @@
 `default_nettype none
-`include "common/struct/rv_if_t.vh"
+`include "src/common/struct/rv_if_t.vh"
 
 module neuron (
     input  wire       clk,
@@ -62,7 +62,7 @@ module neuron (
     output wire [7:0] f_emit_data_next
 `endif
 );
-    `include "common/packages/event_types.vh"
+    `include "src/common/packages/event_types.vh"
     localparam [4:0] EXEC_CHUNK_OPS = 5'd1;
 
     wire       is_cmd_event;

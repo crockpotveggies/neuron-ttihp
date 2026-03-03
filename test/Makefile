@@ -40,7 +40,7 @@ endif
 
 # Allow shared headers under src/common to resolve from the migrated layout.
 COMPILE_ARGS 		+= -g2012
-COMPILE_ARGS 		+= -I$(SRC_DIR)
+COMPILE_ARGS 		+= -I$(SRC_DIR)/..
 
 TOPLEVEL = tt_um_crockpotveggies_neuron
 

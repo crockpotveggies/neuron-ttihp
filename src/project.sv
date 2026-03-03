@@ -1,5 +1,5 @@
 `default_nettype none
-`include "common/struct/rv_if_t.vh"
+`include "src/common/struct/rv_if_t.vh"
 
 module tt_um_crockpotveggies_neuron (
 `ifdef USE_POWER_PINS

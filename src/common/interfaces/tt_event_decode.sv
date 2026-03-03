@@ -1,6 +1,6 @@
 `default_nettype none
 
-`include "common/struct/rv_if_t.vh"
+`include "src/common/struct/rv_if_t.vh"
 
 module tt_event_decode (
     input  wire [7:0] in_data,
