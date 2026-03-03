@@ -1,334 +1,233 @@
-# Neuron Tile Specification
-
-**Module name:** `neuron`  
-**Purpose:** Single-neuron, event-driven neuromorphic tile with selectable neuron modes, programmable synapses, activation streaming, and STDP-lite on-chip learning.  
-**Intended use:** TinyTapeout shuttle projects and USB-serial demo boards (via RP2040 bridge driving IO pins).
+# Programmable Neuron Tile Specification
 
----
+This document describes the live RTL implementation of [tt_um_crockpotveggies_neuron.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/tt_um_crockpotveggies_neuron.sv).
 
-## 1. Top-Level Interface
+The active design is a programmable, event-driven neuron core with:
 
-### 1.1 Ports (TinyTapeout standard)
-```verilog
-module neuron (
-`ifdef USE_POWER_PINS
-    input  wire VGND,
-    input  wire VPWR,
-`endif
-    input  wire [7:0] ui_in,
-    output wire [7:0] uo_out,
-    input  wire [7:0] uio_in,
-    output wire [7:0] uio_out,
-    output wire [7:0] uio_oe,
-    input  wire       ena,
-    input  wire       clk,
-    input  wire       rst_n
-);
-```
+- a TinyTapeout-facing wrapper
+- a 4-bit saturating datapath
+- a 16-entry ternary-clamped weight bank
+- a 16-word microcode store
+- a single-op microsequencer
+- a reusable 2-entry event FIFO
 
-### 1.2 Handshake and sideband mapping
-The design uses a **TT-safe synchronous handshake** (all state updates on `posedge clk`) but is **event-driven at the interface**: state changes occur only when an input event is accepted.
+The old primitive-composition architecture is no longer the active design.
 
-- **Input event request:** `in_req = uio_in[0]`
-- **Input event acknowledge:** `in_ack = uio_out[0]`
-- **Output event request:** `out_req = uio_out[1]`
-- **Output event acknowledge:** `out_ack = uio_in[1]`
+## Active Module Structure
 
-- **Input payload (8-bit):** `in_data = ui_in[7:0]`
-- **Output payload (8-bit):** `out_data = uo_out[7:0]`
+### Wrapper
 
-- **Config sideband (only meaningful when config opcode is used):**
-  - `cfg_arg = uio_in[7:4]` (4-bit)
-  - `cfg_op  = uio_in[3:2]` (2-bit)
+- [tt_um_crockpotveggies_neuron.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/tt_um_crockpotveggies_neuron.sv)
 
-**Pins driven by the design:**
-- `uio_oe[1:0] = 1` (outputs enabled for `in_ack` and `out_req`)
-- `uio_oe[7:2] = 0` (inputs)
-- `uio_out[7:2] = 0` (driven low)
+The wrapper owns the TinyTapeout boundary:
 
----
+- pin mapping
+- synchronized input capture
+- host request de-duplication
+- command decode into `tt_cmd_t`
+- forwarding the held output beat
 
-## 2. Event Protocol (Input)
+### Reusable common blocks
 
-### 2.1 Input event format (`ui_in[7:0]`)
-| Bit(s) | Name | Meaning |
-|---|---|---|
-| 7 | `is_tick` | `1` = tick (time step), `0` = spike/config event |
-| 6 | `polarity` | Used only for **hashy weight** selection (addr 16..60). `0` selects table A, `1` selects table B |
-| 5:0 | `addr` | 6-bit address / opcode |
+- [tt_io_frontend.sv](/Users/justin/Projects/coldfoot_soc/hw/common/interfaces/tt_io_frontend.sv)
+- [tt_event_decode.sv](/Users/justin/Projects/coldfoot_soc/hw/common/interfaces/tt_event_decode.sv)
+- [tt_event_fifo.sv](/Users/justin/Projects/coldfoot_soc/hw/common/rv_fifo/tt_event_fifo.sv)
+- [rv_if_t.vh](/Users/justin/Projects/coldfoot_soc/hw/common/struct/rv_if_t.vh)
+- [event_types.vh](/Users/justin/Projects/coldfoot_soc/hw/common/packages/event_types.vh)
 
-### 2.2 Special addresses (when `is_tick=0`)
-- `addr = 61` (`ADDR_RESET`): soft reset (clears neuron state and learning traces; **does not clear weights**)
-- `addr = 62` (`ADDR_ARM`): arm first-spike timing (FST) timer (sets `fst_armed=1`, clears `fst_t`)
-- `addr = 63` (`ADDR_CFG`): config opcode (uses `cfg_op/cfg_arg` on `uio_in`)
+These are shared infrastructure for the wrapper boundary, event queue, and packed structs/constants.
 
-All other addresses (0..60) are treated as “spike events” into the neuron (behavior depends on `mode`).
+### Core hierarchy
 
----
+- [neuron.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron.sv)
+- [neuron_csr.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_csr.sv)
+- [neuron_ucode_store.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_ucode_store.sv)
+- [neuron_weight_bank.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_weight_bank.sv)
+- [neuron_state.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_state.sv)
+- [neuron_exec.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_exec.sv)
 
-## 3. Output Protocol
+`neuron.sv` is the core top. It owns the event scheduler and sequences one micro-op per cycle for each in-flight event.
 
-### 3.1 Output event format (`uo_out[7:0]`)
-| Bit(s) | Name | Meaning |
-|---|---|---|
-| 7 | `valid` | Always `1` for emitted events |
-| 6:4 | `type` | `TYPE_SPIKE=3'b000` spike event; `TYPE_ACT=3'b101` activation sample |
-| 3:0 | `payload` | 4-bit payload (mode-specific) |
+## Execution Model
 
-### 3.2 Output types
-- **Spike output**: `{1, TYPE_SPIKE, payload}`
-- **Activation sample** (streamed): `{1, TYPE_ACT, act4}`
+The design is event-driven, not free-running.
 
-Because the design uses a **single-entry output buffer**, it can emit **at most one output per accepted input event**.
+- `CMD_EVENT` pushes events into the 2-entry FIFO.
+- If the FIFO is non-empty and no output beat is being held, the core starts servicing one event.
+- The sequencer executes one micro-instruction per cycle.
+- Intermediate state is kept in the core's working registers while the event is in flight.
+- The architectural RF, metadata, output latch, and weight bank commit once, at the end of the event.
 
----
+That gives the core:
 
-## 4. Handshake Semantics
+- a smaller combinational cone than the older unrolled executor
+- stable per-event semantics, because commit is still atomic
 
-### 4.1 Input acceptance
-An input event is accepted when `in_req && in_ack` is sampled high on a rising clock edge.
+Important constraints:
 
-- External inputs are internally synchronized to `clk` (2-flop synchronizers on `ui_in` and `uio_in`).
-- `in_ack = 1` iff `ena && rst_n && (output buffer empty) && (synchronized in_req is high) && (current in_req not yet accepted)`
-- While `in_req` remains asserted, only one input event is accepted (host must deassert and reassert `in_req` for the next event).
-- If an output is pending (`out_req=1`), then `in_ack=0` (backpressure)
+- there is no branch instruction
+- control flow is still only `vector_base[tag]` plus `ucode_len_r`
+- the datapath step in `neuron_exec` is combinational, but the overall core is a clocked state machine
 
-### 4.2 Output consumption
-An output event is consumed when `out_req && out_ack` is sampled high on a rising clock edge. The output buffer clears on the next cycle.
+## Architectural State
 
-### 4.3 Recommended driving rules (host / RP2040 firmware)
-- Hold `ui_in` stable while asserting `in_req` until `in_ack==1` is observed.
-- Only assert `out_ack` when `out_req==1` to consume an output.
+### Register file
 
----
+The core stores eight signed 4-bit registers:
 
-## 5. Synapses and Weights
+- `R0 = V`
+- `R1 = I`
+- `R2 = TH`
+- `R3 = R`
+- `R4 = T0`
+- `R5 = T1`
+- `R6 = W`
+- `R7 = AUX`
 
-### 5.1 Programmable synapse window
-Addresses `0..15` (`addr[5:4]==00`) are **programmable** using a 16-entry table:
+All arithmetic saturates to `-8..+7`.
 
-- `wtab[0..15]`: **2-bit unsigned weight** per synapse (`0..3`)
-- Storage: 32 bits total
+### Non-RF state
 
-When `addr` is in `0..15`, the effective weight is:
-- `w_eff = wtab[addr[3:0]]`
+The core also stores:
 
-### 5.2 Hashy weights for addresses 16..60
-For `addr` outside `0..15`, a lightweight combinational “hash” produces `w_hash` in `0..3`, with `polarity` selecting between two hash tables.
+- `last_sid[3:0]`
+- `last_tag[1:0]`
+- `last_time[5:0]`
+- `spike_flag`
+- `have_out`
+- `out_data_r[7:0]`
 
-An optional bias is applied to reduce zeros:
-- if `w_hash==0` then `w_hash_eff=1`, else `w_hash_eff=w_hash`
+### Weight memory
 
-Effective weight for non-programmable addresses:
-- `w_eff = w_hash_eff`
+[neuron_weight_bank.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_weight_bank.sv) stores 16 signed 4-bit entries, but the committed legal values are always ternary:
 
----
+- `-1`
+- `0`
+- `+1`
 
-## 6. Configuration Interface (addr=63)
+Both direct host writes and `STDP_LITE` writeback are clamped into that set.
 
-When `is_tick=0` and `addr=63`, the input event is treated as a config transaction.
+### Microcode memory
 
-### 6.1 Config fields
-- `cfg_op  = uio_in[3:2]` (2-bit opcode)
-- `cfg_arg = uio_in[7:4]` (4-bit argument)
+[neuron_ucode_store.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_ucode_store.sv) stores 16 words of 16 bits each.
 
-### 6.2 Config opcodes
-| `cfg_op` | Name | Description |
-|---|---|---|
-| `00` | `SET_WIDX` | `pending_widx <= cfg_arg` (select weight table index 0..15) |
-| `01` | `WRITE_W`  | `wtab[pending_widx] <= cfg_arg[1:0]` |
-| `10` | `SET_MODE` | Sets mode + streaming + learning enable (see below) |
-| `11` | Reserved | No action (available for future expansion) |
+- programming is byte-oriented through `CMD_UCODE`
+- `ucode_ptr_r[0]` selects low vs high byte
+- `ucode_ptr_r[4:1]` selects one of the 16 words
 
-### 6.3 SET_MODE encoding (`cfg_op=10`)
-`cfg_arg` bits:
-- `cfg_arg[1:0] = mode`
-- `cfg_arg[2]   = stream_act`
-- `cfg_arg[3]   = learn_en`
+## Programming Surfaces
 
-Defaults after reset:
-- `mode = 0` (LIF)
-- `stream_act = 1` (on)
-- `learn_en = 0` (off)
+The core is programmed through:
 
----
+- `CMD_CSR`
+- `CMD_WEIGHT`
+- `CMD_UCODE`
 
-## 7. Neuron Modes and Dynamics
+The event path (`CMD_EVENT`) only feeds the FIFO.
 
-The tile behaves as a **single neuron** whose update rules depend on `mode`.
+### CSR-owned state
 
-### Mode 0: LIF (Leaky Integrate-and-Fire)
-- State: `lif_V` (8-bit)
-- Parameters:
-  - Threshold `LIF_THR = 32`
-  - Leak shift `LIF_LEAK_SHIFT = 3` (shift-leak)
+[neuron_csr.sv](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/src/neuron_csr.sv) owns:
 
-**On spike event (is_tick=0, addr 0..60 excluding special):**
-- `lif_V_next = sat(lif_V + w_eff)`
-- If `lif_V_next >= LIF_THR`:
-  - emit `TYPE_SPIKE` (payload `0`)
-  - reset `lif_V = 0`
-  - set `post_trace = 1` (learning)
-  - if `learn_en=1`, start serial LTP scan (`learn_pending=1`)
+- `CSR_CTRL` pulse decode
+- `ucode_ptr_r`
+- `ucode_len_r`
+- `vector_base0_r..vector_base3_r`
+- `init_rf_flat`
 
-**On tick event (is_tick=1):**
-- `lif_V = lif_V - (lif_V >> LIF_LEAK_SHIFT)`
-- if `stream_act=1`, emit `TYPE_ACT` with `lif_V[3:0]` (if no spike output emitted on that event)
+Default reset image:
 
-### Mode 1: Temporal Differencing (TD)
-- State: `td_curr`, `td_prev`, `td_last_diff`
-- Parameter: `TD_THR = 4`
+- `V = 0`
+- `I = 0`
+- `TH = +7`
+- `R = 0`
+- `T0 = 0`
+- `T1 = 0`
+- `W = 0`
+- `AUX = 0`
 
-**On spike event:**
-- `td_curr = sat(td_curr + w_eff)` (8-bit saturating)
+## Reset And Enable Behavior
 
-**On tick event:**
-- `diff = max(td_curr - td_prev, 0)` (floored at zero)
-- `td_last_diff = diff`
-- `td_prev = td_curr; td_curr = 0`
-- If `diff >= TD_THR`: emit `TYPE_SPIKE` with payload `diff[3:0]`
-- Else if `stream_act=1`: emit `TYPE_ACT` with payload `diff[3:0]`
+### Hard reset
 
-### Mode 2: First-Spike Timing (FST)
-- State: `fst_armed`, `fst_t`, `fst_last_t`
+- `rst_n = 0`
 
-**Arm (is_tick=0, addr=62):**
-- `fst_armed = 1; fst_t = 0`
+This clears:
 
-**On tick event:**
-- if `fst_armed`: `fst_t++` (saturating at 255)
-- if `stream_act=1`: emit `TYPE_ACT` with payload:
-  - if armed: `fst_t[3:0]`
-  - else: `fst_last_t[3:0]`
+- CSR state
+- microcode store
+- weight bank
+- FIFO contents
+- runtime neuron state
 
-**On spike event:**
-- if `fst_armed`:
-  - capture `fst_last_t = fst_t`
-  - disarm `fst_armed=0`
-  - emit `TYPE_SPIKE` with payload `fst_t[3:0]`
+### Disable
 
-### Mode 3: Temporal Convolution (CONV)
-A minimal temporal “spiking conv” filter on a 4-tick activity window.
+- `ena = 0`
 
-- State: `conv_shift[3:0]`, `spike_seen_this_tick`, `conv_last_sum`
-- Kernel: `K0=1, K1=2, K2=1, K3=0`
-- Threshold: `CONV_THR=3`
+This clears runtime state aggressively:
 
-**On spike event:**
-- sets `spike_seen_this_tick = 1`
+- FIFO cleared
+- weights cleared to zero
+- `neuron_state` reloads `init_rf_flat`
+- metadata cleared
+- held output cleared
 
-**On tick event:**
-- `conv_shift = {conv_shift[2:0], spike_seen_this_tick}`
-- compute `sum_next = Σ (conv_shift[i] ? Ki : 0)`
-- `conv_last_sum = sum_next`
-- clear `spike_seen_this_tick = 0`
-- If `sum_next >= CONV_THR`: emit `TYPE_SPIKE` with payload `{0,sum_next}` (0..7)
-- Else if `stream_act=1`: emit `TYPE_ACT` with payload `{0,sum_next}`
+### Soft runtime reset
 
----
+Triggered by `CSR_CTRL.bit0`.
 
-## 8. STDP-lite On-Chip Learning
+This reloads the live runtime state from `init_rf_flat` and clears:
 
-Learning is designed to be **TinyTapeout-practical**: low area, low fanout, no per-synapse timers.
+- `last_sid`, `last_tag`, `last_time`
+- `spike_flag`
 
-### 8.1 Learning enable
-- `learn_en` is controlled by config: `SET_MODE` (`cfg_arg[3]`)
+It does not erase microcode or the persistent weight bank.
 
-### 8.2 Learning state
-- `pre_trace[15:0]`: 1-bit “recent pre-spike” flag per programmable synapse (0..15)
-- `post_trace`: 1-bit “recent post-spike” flag
-- `learn_pending`: serial LTP scan active
-- `learn_ptr[3:0]`: synapse index being processed (0..15)
+### Output and FIFO clear pulses
 
-### 8.3 Pre-spike behavior (trace + LTD)
-On any **spike event** (in any mode), if `addr` is programmable (`0..15`):
-- set `pre_trace[addr] = 1`
-- if `learn_en && post_trace` then apply **LTD**:
-  - `wtab[addr] = max(wtab[addr]-1, 0)`
+`CSR_CTRL` also provides:
 
-### 8.4 Post-spike behavior (post_trace + LTP trigger)
-When the neuron emits a **post spike** (`TYPE_SPIKE`), it sets:
-- `post_trace = 1`
+- `bit1`: clear held output beat
+- `bit2`: clear the event FIFO
 
-Additionally, **in LIF mode only**, if `learn_en=1`:
-- starts the serial **LTP scan**:
-  - `learn_pending = 1`
-  - `learn_ptr = 0`
+## Numeric And Transport Encodings
 
-### 8.5 Serial LTP scan (one update per accepted input event)
-While `learn_pending=1`, on each accepted input event:
-- if `pre_trace[learn_ptr] == 1`:
-  - `wtab[learn_ptr] = min(wtab[learn_ptr]+1, 3)`
-  - `pre_trace[learn_ptr] = 0`
-- advance `learn_ptr`
-- when `learn_ptr==15`, clear `learn_pending` and reset `learn_ptr=0`
+### Arithmetic precision
 
-### 8.6 Bounding the LTD window
-On any **tick event** (`is_tick=1`):
-- `post_trace` clears (`post_trace=0`)
+- RF values: signed 4-bit
+- weight storage: signed 4-bit, ternary committed values
+- event metadata: `sid[3:0]`, `tag[1:0]`, `event_time[5:0]`
 
-This bounds how long a post-spike can depress subsequent pre-spikes.
+### Host-side ternary weight encoding
 
----
+- `00` -> `0`
+- `01` -> `+1`
+- `11` -> `-1`
+- `10` -> treated as `0`
 
-## 9. Activation Streaming (UI-friendly)
+### Output beat format
 
-If `stream_act=1`, then on every **tick event** the tile attempts to emit an activation sample:
-- `TYPE_ACT` with a 4-bit payload `act4`
+`uo_out[7:0]` is the held output beat:
 
-Mode-specific `act4`:
-- LIF: `lif_V[3:0]`
-- TD: `td_last_diff[3:0]` (or current tick diff)
-- FST: `fst_t[3:0]` if armed else `fst_last_t[3:0]`
-- CONV: `{0, conv_last_sum}`
+- `uo_out[7] = 1`
+- `uo_out[6:5] = emitted tag`
+- `uo_out[4:1] = last_sid`
+- `uo_out[0] = spike_flag`
 
-**Note:** Only one output can be buffered at a time. If the output buffer is busy, the activation sample for that tick may be skipped due to backpressure.
+The beat is held until acknowledged on `uio_in[1]`.
 
----
+## Notes On Time
 
-## 10. Reset Behavior
+`event_time` is captured by `RECV` and stored in `last_time`, but the current core does not automatically compute decay from timestamp deltas.
 
-### 10.1 Hardware reset (`rst_n=0`)
-Clears:
-- output buffer
-- all neuron state (membrane/counters/traces)
-- weight table (`wtab`) is reset to zero
+All decay remains explicit and shift-based:
 
-### 10.2 Soft reset event (is_tick=0, addr=61)
-Clears:
-- neuron state and learning traces
-- **does not clear weights** (`wtab` unchanged)
+- `LEAK`
+- `TDEC`
+- the non-spike decay branch of `REFRACT`
 
----
+## Related Documentation
 
-## 11. Demo/Host Integration Notes (USB-Serial)
-
-On TinyTapeout demo boards, USB-C serial connects to an onboard microcontroller (e.g., RP2040) which then drives the ASIC IO pins:
-
-- Host UI sends “spike” and “tick” events over serial to RP2040 firmware.
-- Firmware toggles `in_req`, places data on `ui_in`, and reads `uo_out` when `out_req` asserts.
-
-This design’s activation streaming makes it straightforward to plot or visualize activity in real-time:
-- Plot `TYPE_ACT` payload as a bar graph/trace per tick.
-- Treat `TYPE_SPIKE` as event markers.
-
----
-
-## 12. Quick Reference
-
-### Input: send a tick
-- `ui_in = 8'b1xxxxxxx` (recommended `0x80`)
-- assert `in_req` until `in_ack=1`
-
-### Input: send a spike to synapse i (0..15)
-- `ui_in = {is_tick=0, polarity=?, addr=i}`
-
-### Config: set mode + streaming + learning
-- send config event `ui_in = {0,0,63}`
-- set `cfg_op=2'b10`
-- set `cfg_arg = {learn_en, stream_act, mode[1:0]}`
-
-### Output: decode event
-- `uo_out[7]` valid
-- `uo_out[6:4]` type (SPIKE=0, ACT=5)
-- `uo_out[3:0]` payload
+- [command_protocol.md](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/docs/command_protocol.md)
+- [isa.md](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/docs/isa.md)
+- [layer_examples.md](/Users/justin/Projects/coldfoot_soc/hw/ip/neuron/docs/layer_examples.md)
